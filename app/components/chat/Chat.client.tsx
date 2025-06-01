@@ -9,7 +9,7 @@ import { useAnimate } from 'framer-motion';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { cssTransition, toast, ToastContainer } from 'react-toastify';
 import { useMessageParser, usePromptEnhancer, useShortcuts } from '~/lib/hooks';
-import { description, useChatHistory } from '~/lib/persistence';
+import { chatId as globalChatIdStore, description, useChatHistory } from '~/lib/persistence';
 import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, PROMPT_COOKIE_KEY, PROVIDER_LIST } from '~/utils/constants';
@@ -27,6 +27,7 @@ import { logStore } from '~/lib/stores/logs';
 import { streamingState } from '~/lib/stores/streaming';
 import { filesToArtifacts } from '~/utils/fileUtils';
 import { supabaseConnection } from '~/lib/stores/supabase';
+import ChatHistory from './ChatHistory'; // Import the new component
 
 const toastAnimation = cssTransition({
   enter: 'animated fadeInRight',
@@ -118,6 +119,8 @@ export const ChatImpl = memo(
     useShortcuts();
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+    const currentChatId = useStore(globalChatIdStore);
     const [chatStarted, setChatStarted] = useState(initialMessages.length > 0);
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
     const [imageDataList, setImageDataList] = useState<string[]>([]);
@@ -132,6 +135,15 @@ export const ChatImpl = memo(
     );
     const supabaseAlert = useStore(workbenchStore.supabaseAlert);
     const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
+
+    // Handler for storing messages that includes the model
+    const storeMessagesWithModel = useCallback(
+      async (msgs: Message[]) => {
+        // The 'model' state variable is available in this scope
+        await storeMessageHistory(msgs, model);
+      },
+      [storeMessageHistory, model], // model is a dependency
+    );
 
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
@@ -245,9 +257,9 @@ export const ChatImpl = memo(
         initialMessages,
         isLoading,
         parseMessages,
-        storeMessageHistory,
+      storeMessageHistory: storeMessagesWithModel, // Use the wrapped function
       });
-    }, [messages, isLoading, parseMessages]);
+  }, [messages, isLoading, parseMessages, storeMessagesWithModel]);
 
     const scrollTextArea = () => {
       const textarea = textareaRef.current;
@@ -565,6 +577,29 @@ export const ChatImpl = memo(
         clearDeployAlert={() => workbenchStore.clearDeployAlert()}
         data={chatData}
       />
+      <div style={{ position: 'fixed', top: '1rem', right: '6rem', zIndex: 1050 }}>
+        <button
+          onClick={() => setIsHistoryOpen((prev) => !prev)}
+          style={{
+            padding: '0.5rem 1rem',
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+          }}
+          aria-label={isHistoryOpen ? 'Close history panel' : 'Open history panel'}
+        >
+          {isHistoryOpen ? 'Close History' : 'View History'}
+        </button>
+      </div>
+      <ChatHistory
+        chatId={currentChatId}
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+      />
+    </>
     );
   },
 );

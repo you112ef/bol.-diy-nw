@@ -16,6 +16,9 @@ import {
   getSnapshot,
   setSnapshot,
   type IChatMetadata,
+  type IChatHistoryEntry, // Import IChatHistoryEntry
+  setChatHistoryEntries, // Renamed from saveChatHistory
+  getChatHistory, // For loadChatHistory
 } from './db';
 import type { FileMap } from '~/lib/stores/files';
 import type { Snapshot } from './types';
@@ -30,6 +33,7 @@ export interface ChatHistoryItem {
   messages: Message[];
   timestamp: string;
   metadata?: IChatMetadata;
+  history?: IChatHistoryEntry[]; // Added history field
 }
 
 const persistenceEnabled = !import.meta.env.VITE_DISABLE_PERSISTENCE;
@@ -273,14 +277,49 @@ ${value.content}
         console.error(error);
       }
     },
-    storeMessageHistory: async (messages: Message[]) => {
-      if (!db || messages.length === 0) {
+    storeMessageHistory: async (messages: Message[], modelName: string = 'unknown_model') => {
+      if (!db) { // Allow storing history even if messages array is empty if we need to clear it
         return;
       }
 
-      const { firstArtifact } = workbenchStore;
-      messages = messages.filter((m) => !m.annotations?.includes('no-store'));
+      const finalChatId = chatId.get();
+      if (!finalChatId) {
+        console.error('Cannot save messages or history, chat ID is not set.');
+        toast.error('Failed to save chat: Chat ID missing.');
+        return;
+      }
 
+      // Filter out 'no-store' messages for main message storage
+      const newMessagesToStore = messages.filter((m) => !m.annotations?.includes('no-store'));
+
+      // For chat history, consider all messages passed (excluding no-store) combined with archived ones
+      const allDisplayMessages = [...archivedMessages, ...newMessagesToStore];
+      const historyEntries: IChatHistoryEntry[] = [];
+
+      for (let i = 0; i < allDisplayMessages.length - 1; i++) {
+        if (allDisplayMessages[i].role === 'user' && allDisplayMessages[i+1]?.role === 'assistant') {
+          // Ensure we don't include 'no-store' messages in history either, if that's desired.
+          // For now, assuming if they are part of allDisplayMessages, they are candidates for history.
+          historyEntries.push({
+            prompt: allDisplayMessages[i].content,
+            result: allDisplayMessages[i+1].content,
+            model: modelName, // Use the provided model name
+          });
+          // Skip the assistant message we just processed
+          i++;
+        }
+      }
+
+      try {
+        await setChatHistoryEntries(db, finalChatId, historyEntries);
+      } catch (error) {
+        console.error('Failed to save chat history:', error);
+        toast.error('Failed to save chat history.');
+        // Do not necessarily return, main messages might still save.
+      }
+
+      // Proceed with storing the main messages
+      const { firstArtifact } = workbenchStore;
       let _urlId = urlId;
 
       if (!urlId && firstArtifact?.id) {
@@ -322,21 +361,14 @@ ${value.content}
         }
       }
 
-      // Ensure chatId.get() is used for the final setMessages call
-      const finalChatId = chatId.get();
-
-      if (!finalChatId) {
-        console.error('Cannot save messages, chat ID is not set.');
-        toast.error('Failed to save chat messages: Chat ID missing.');
-
-        return;
-      }
-
+      // Ensure chatId.get() is used for the final setMessages call (already captured as finalChatId)
+      // Note: messages variable here is the original one passed to the function.
+      // We use newMessagesToStore for setMessages.
       await setMessages(
         db,
-        finalChatId, // Use the potentially updated chatId
-        [...archivedMessages, ...messages],
-        urlId,
+        finalChatId,
+        [...archivedMessages, ...newMessagesToStore], // Use filtered messages
+        _urlId, // Use potentially updated _urlId
         description.get(),
         undefined,
         chatMetadata.get(),
@@ -394,6 +426,21 @@ ${value.content}
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    },
+    loadChatHistory: async (chatIdToLoad: string): Promise<IChatHistoryEntry[]> => {
+      if (!db) {
+        logStore.logError('Cannot load chat history, database not available.');
+        return [];
+      }
+      try {
+        const history = await getChatHistory(db, chatIdToLoad);
+        return history;
+      } catch (error) {
+        console.error('Failed to load chat history:', error);
+        logStore.logError(`Failed to load chat history for ID ${chatIdToLoad}`, error);
+        toast.error('Failed to load chat history.');
+        return [];
+      }
     },
   };
 }

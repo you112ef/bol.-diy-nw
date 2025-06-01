@@ -3,6 +3,12 @@ import { createScopedLogger } from '~/utils/logger';
 import type { ChatHistoryItem } from './useChatHistory';
 import type { Snapshot } from './types'; // Import Snapshot type
 
+export interface IChatHistoryEntry {
+  prompt: string;
+  result: string;
+  model: string;
+}
+
 export interface IChatMetadata {
   gitUrl: string;
   gitBranch?: string;
@@ -14,12 +20,12 @@ const logger = createScopedLogger('ChatHistory');
 // this is used at the top level and never rejects
 export async function openDatabase(): Promise<IDBDatabase | undefined> {
   if (typeof indexedDB === 'undefined') {
-    console.error('indexedDB is not available in this environment.');
+    logger.error('indexedDB is not available in this environment.');
     return undefined;
   }
 
   return new Promise((resolve) => {
-    const request = indexedDB.open('boltHistory', 2);
+    const request = indexedDB.open('boltHistory', 3); // Incremented version to 3
 
     request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
       const db = (event.target as IDBOpenDBRequest).result;
@@ -36,6 +42,14 @@ export async function openDatabase(): Promise<IDBDatabase | undefined> {
       if (oldVersion < 2) {
         if (!db.objectStoreNames.contains('snapshots')) {
           db.createObjectStore('snapshots', { keyPath: 'chatId' });
+        }
+      }
+
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains('chatHistory')) {
+          // Store history as an array per chatId
+          const store = db.createObjectStore('chatHistory', { keyPath: 'chatId' });
+          store.createIndex('chatId', 'chatId', { unique: true });
         }
       }
     };
@@ -123,18 +137,21 @@ export async function getMessagesById(db: IDBDatabase, id: string): Promise<Chat
 
 export async function deleteById(db: IDBDatabase, id: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['chats', 'snapshots'], 'readwrite'); // Add snapshots store to transaction
+    const transaction = db.transaction(['chats', 'snapshots', 'chatHistory'], 'readwrite'); // Add chatHistory store
     const chatStore = transaction.objectStore('chats');
     const snapshotStore = transaction.objectStore('snapshots');
+    const chatHistoryStore = transaction.objectStore('chatHistory');
 
     const deleteChatRequest = chatStore.delete(id);
-    const deleteSnapshotRequest = snapshotStore.delete(id); // Also delete snapshot
+    const deleteSnapshotRequest = snapshotStore.delete(id);
+    const deleteChatHistoryRequest = chatHistoryStore.delete(id); // Also delete chat history
 
     let chatDeleted = false;
     let snapshotDeleted = false;
+    let chatHistoryDeleted = false;
 
     const checkCompletion = () => {
-      if (chatDeleted && snapshotDeleted) {
+      if (chatDeleted && snapshotDeleted && chatHistoryDeleted) {
         resolve(undefined);
       }
     };
@@ -149,8 +166,8 @@ export async function deleteById(db: IDBDatabase, id: string): Promise<void> {
       snapshotDeleted = true;
       checkCompletion();
     };
-
     deleteSnapshotRequest.onerror = (event) => {
+      // If snapshot doesn't exist, consider it 'deleted' for this operation
       if ((event.target as IDBRequest).error?.name === 'NotFoundError') {
         snapshotDeleted = true;
         checkCompletion();
@@ -159,9 +176,20 @@ export async function deleteById(db: IDBDatabase, id: string): Promise<void> {
       }
     };
 
-    transaction.oncomplete = () => {
-      // This might resolve before checkCompletion if one operation finishes much faster
+    deleteChatHistoryRequest.onsuccess = () => {
+      chatHistoryDeleted = true;
+      checkCompletion();
     };
+    deleteChatHistoryRequest.onerror = (event) => {
+      // If chat history doesn't exist, consider it 'deleted' for this operation
+      if ((event.target as IDBRequest).error?.name === 'NotFoundError') {
+        chatHistoryDeleted = true;
+        checkCompletion();
+      } else {
+        reject(deleteChatHistoryRequest.error);
+      }
+    };
+
     transaction.onerror = () => reject(transaction.error);
   });
 }
@@ -334,10 +362,48 @@ export async function deleteSnapshot(db: IDBDatabase, chatId: string): Promise<v
 
     request.onerror = (event) => {
       if ((event.target as IDBRequest).error?.name === 'NotFoundError') {
-        resolve();
+        resolve(); // Resolve if not found, as the state is effectively 'deleted'
       } else {
         reject(request.error);
       }
     };
+  });
+}
+
+// New functions for chat history
+
+export async function getChatHistory(db: IDBDatabase, chatId: string): Promise<IChatHistoryEntry[]> {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('chatHistory', 'readonly');
+    const store = transaction.objectStore('chatHistory');
+    const request = store.get(chatId);
+
+    request.onsuccess = () => {
+      // Returns an object { chatId: string, history: IChatHistoryEntry[] } or undefined
+      if (request.result) {
+        resolve(request.result.history);
+      } else {
+        resolve([]); // Return empty array if no history found for the chatId
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function setChatHistoryEntries(
+  db: IDBDatabase,
+  chatId: string,
+  historyEntries: IChatHistoryEntry[], // Expects the full list of history entries
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('chatHistory', 'readwrite');
+    const store = transaction.objectStore('chatHistory');
+
+    // Overwrite with the new history entries
+    const request = store.put({ chatId, history: historyEntries });
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    transaction.onerror = () => reject(transaction.error);
   });
 }
