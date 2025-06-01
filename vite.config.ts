@@ -1,4 +1,5 @@
 import { cloudflareDevProxyVitePlugin as remixCloudflareDevProxy, vitePlugin as remixVitePlugin } from '@remix-run/dev';
+/// <reference types="vitest" />
 import UnoCSS from 'unocss/vite';
 import { defineConfig, type ViteDevServer } from 'vite';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
@@ -145,6 +146,14 @@ export default defineConfig((config) => {
           api: 'modern-compiler',
         },
       },
+    },
+    // Vitest configuration
+    test: {
+      globals: true, // Use Vitest globals (describe, it, expect, etc.)
+      environment: 'jsdom', // Or 'node' - jsdom is good for component tests
+      setupFiles: ['./jest.setup.js'], // Path to your global setup file
+      include: ['**/*.{test,spec}.?(c|m)[jt]s?(x)'], // Default pattern
+      // reporters: ['verbose'], // Optional: for more detailed test output
     },
   };
 });

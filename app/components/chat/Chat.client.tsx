@@ -577,7 +577,7 @@ export const ChatImpl = memo(
         clearDeployAlert={() => workbenchStore.clearDeployAlert()}
         data={chatData}
       />
-      <div style={{ position: 'fixed', top: '1rem', right: '6rem', zIndex: 1050 }}>
+      <div> {/* Simplified div for testing parser error */}
         <button
           onClick={() => setIsHistoryOpen((prev) => !prev)}
           style={{

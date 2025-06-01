@@ -6,7 +6,8 @@
       "vite/client",
       "@cloudflare/workers-types/2023-07-01",
       "@types/dom-speech-recognition",
-      "electron"
+      "electron",
+      "vitest/globals" // Added for Vitest global types
     ],
     "isolatedModules": true,
     "esModuleInterop": true,
